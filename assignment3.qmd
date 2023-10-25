@@ -1,0 +1,456 @@
+---
+title: "Assignment 3"
+subtitle: "Due at 11:59pm on October 24."
+author: Isabel Shaheen O'Malley
+format: pdf
+editor: visual
+---
+
+You may work in pairs or individually for this assignment. Make sure you join a group in Canvas if you are working in pairs. Turn in this assignment as an HTML or PDF file to ELMS. Make sure to include the R Markdown or Quarto file that was used to generate it.
+
+Include the GitHub link for the repository containing these files.
+
+<https://github.com/isabelshaheen/assignment3.git>
+
+**Install (if needed) and Load libraries**
+
+```{r}
+
+if(!require(robotstxt)) install.packages("robotstxt")
+if(!require(jsonlite)) install.packages("jsonlite")
+if(!require(RSocrata)) install.packages("RSocrata")
+
+library(xml2)
+library(rvest)
+library(tidyverse)
+library(jsonlite)
+library(robotstxt)
+library(RSocrata)
+```
+
+## Web Scraping
+
+In this assignment, your task is to scrape some information from Wikipedia. We start with the following page about Grand Boulevard, a Chicago Community Area.
+
+<https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago>
+
+The ultimate goal is to gather the table "Historical population" and convert it to a `data.frame`.
+
+**As a first step, read in the html page as an R object.**
+
+```{r}
+url <- read_html("https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago")
+```
+
+**Extract the tables from this object (using the `rvest` package) and save the result as a new object.** Follow the instructions if there is an error.
+
+```{r}
+
+nds <- html_nodes(url, xpath =  '//*[contains(concat( " ", @class, " " ), concat( " ", "us-census-pop-left", " " ))]//th | //*[contains(concat( " ", @class, " " ), concat( " ", "us-census-pop-left", " " ))]//td')
+```
+
+Use `str()` on this new object \-- it should be a list. Try to find the position of the "Historical population" in this list since we need it in the next step.
+
+Extract the "Historical population" table from the list and save it as another object. You can use subsetting via `[[…]]` to extract pieces from a list. Print the result.
+
+```{r}
+#| eval = FALSE 
+str(nds)
+nds[[2]]
+
+```
+
+Work-around, from Brian's demo in class 6 "06-web-scraping.Rmd"
+
+```{r}
+
+tbl <- html_text(nds)
+tbl
+```
+
+```{r}
+
+# Create table with # of columns in the source table (including the blank column)
+historical_pop <- tbl[5:44] %>% matrix(ncol = 4, byrow = TRUE) %>% as.data.frame()
+
+# Then we can remove the unwanted column after
+historical_pop$V3 <- NULL
+
+#Rename variables 
+historical_pop <- rename(historical_pop, Census = V1, Pop. = V2, '%+-' = 'V4')
+
+```
+
+## Expanding to More Pages
+
+That's it for this page. However, we may want to repeat this process for other community areas. The Wikipedia page https://en.wikipedia.org/wiki/Grand_Boulevard,\_Chicago has a section on "Places adjacent to Grand Boulevard, Chicago" at the bottom.
+
+Can you find the corresponding table in the list of tables that you created earlier? Extract this table as a new object. ***STUCK***
+
+Grab "Places adjacent to Grand Boulevard, Chicago" box
+
+```{r}
+
+nds2 <- html_elements(url, xpath = '//*[contains(concat( " ", @class, " " ), concat( " ", "navbox", " " )) and (((count(preceding-sibling::*) + 1) = 29) and parent::*)]')
+
+```
+
+Then, grab text
+
+```{r}
+
+## Grab html text 
+text <- html_text(nds2)
+text
+```
+
+Get the community areas east of Grand Boulevard and save them as a character vector. Print the result.
+
+Convert `text` to tibble
+
+```{r}
+text <- as_tibble(text)
+head(text)
+
+```
+
+We want to use this list to create a loop that extracts the population tables from the Wikipedia pages of these places. To make this work and build valid urls, we need to replace empty spaces in the character vector with underscores. This can be done with `gsub()`, or by hand. The resulting vector should look like this: "Oakland,\_Chicago" "Kenwood,\_Chicago" "Hyde_Park,\_Chicago"
+
+```{r}
+
+east_areas <- c("Oakland,_Chicago", "Kenwood,_Chicago", "Hyde_Park,_Chicago")
+```
+
+To prepare the loop, we also want to copy our `pop` table and rename it as `pops`. In the loop, we append this table by adding columns from the other community areas.
+
+```{r}
+pops <- historical_pop
+```
+
+Build a small loop to test whether you can build valid urls using the vector of places and pasting each element of it after `https://en.wikipedia.org/wiki/` in a `for-loop`. Calling `url` shows the last url of this loop, which should be `https://en.wikipedia.org/wiki/Hyde_Park,_Chicago`.
+
+```{r}
+#Build url
+
+for(i in east_areas) {
+  url <- paste("https://en.wikipedia.org/wiki/", i, sep = "")
+    }
+
+ print(url)
+```
+
+Finally, extend the loop and add the code that is needed to grab the population tables from each page. Add columns to the original table `pops` using `cbind()`.
+
+```{r}
+
+# Build url
+for(i in east_areas) {
+  url <- paste("https://en.wikipedia.org/wiki/", i, sep = "")
+  src <- read_html(url)
+  print(url)
+
+# Extract population table from url 
+nds <- html_nodes(src, xpath =  '//*[contains(concat( " ", @class, " " ), concat( " ", "us-census-pop-right", " " ))]//td | //*[contains(concat( " ", @class, " " ), concat( " ", "us-census-pop-right", " " ))]//th')
+
+# Extract text and put into a character vector called "tbl" (table)
+  tbl <- html_text(nds)
+  
+# Create table with same # of columns in the source table (including the blank column)
+  historical_pop <- tbl[5:44] %>% matrix(ncol = 4, byrow = TRUE) %>% as.data.frame()
+
+# Then we can remove the unwanted column after
+  historical_pop$V3 <- NULL
+
+# Rename variables 
+  historical_pop <- rename(historical_pop, Census = V1, Pop. = V2, '%+-' = 'V4')
+
+# Add columns to original table pops
+  
+  pops <- cbind(pops, historical_pop)
+  
+}
+
+```
+
+## Scraping and Analyzing Text Data
+
+Suppose we wanted to take the actual text from the Wikipedia pages instead of just the information in the table. Our goal in this section is to extract the text from the body of the pages, then do some basic text cleaning and analysis.
+
+### Scraping
+
+First, scrape just the text without any of the information in the margins or headers. For example, for "Grand Boulevard", the text should start with, "**Grand Boulevard** on the [South Side](https://en.wikipedia.org/wiki/South_Side,_Chicago "South Side, Chicago") of [Chicago](https://en.wikipedia.org/wiki/Chicago "Chicago"), [Illinois](https://en.wikipedia.org/wiki/Illinois "Illinois"), is one of the ...".
+
+Extract element and text from url
+
+```{r}
+url <- read_html("https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago")
+
+article <- html_nodes(url, xpath = '//p')
+                            
+text <- html_text(article) 
+
+```
+
+Make sure all of the text is in one block by using something like the code below (I called my object `description`).
+
+```{r}
+text <- text %>% paste(collapse = 'text')
+text
+```
+
+Create character vector with the 4 community areas
+
+```{r}
+community_areas <- c("Grand Boulevard,_Chicago", "Oakland,_Chicago", "Kenwood,_Chicago", "Hyde_Park,_Chicago")
+```
+
+Make an empty tibble with two variables: location and description
+
+```{r}
+
+Community_description <- tibble(
+  Location = NA,
+  Description = NA
+  )
+
+```
+
+Using a similar loop as in the last section, grab the descriptions of the various communities areas.
+
+```{r}
+#| eval = FALSE 
+
+# Build url
+for(i in community_areas) {
+url <- paste("https://en.wikipedia.org/wiki/",i, sep = "")
+src <- read_html(url)
+print(url)
+
+# Extract article from url 
+article <- html_nodes(src, xpath = '//p')
+
+# Extract text and put into a character vector called "text", and collapse into 1 cell    
+text <- html_text(article) 
+text <- text %>% paste(collapse = 'text') 
+
+# Put text into a 2-column and 2-cell tibble, where the first variable is the community_area 
+text_table <- tibble(Location = i, Description = text)
+
+# Add rows to original table Community_description
+Community_description <- rbind(Community_description, text_table)
+
+}
+
+```
+
+Couldn't resolve the following error message in the loop:
+
+Error in `open.connection()`: ! HTTP error 400. Backtrace: 1. xml2::read_html(url) 2. xml2:::read_html.default(url) 6. xml2:::read_xml.character(...) 7. xml2:::read_xml.connection(...) 9. base::open.connection(x, "rb") Execution halted
+
+I changed the location in the url by hand below
+
+```{r}
+# Build url
+  url <- ("https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago") #change location 
+  src <- read_html(url)
+  print(url)
+
+# Extract article from url 
+article <- html_nodes(src, xpath = '//p')
+
+# Extract text and put into a character vector called "text", and collapse into 1 cell    
+text <- html_text(article) 
+text <- text %>% paste(collapse = 'text') 
+
+# Put text into a 2-column and 2-cell tibble, where the first variable is the community_area 
+text_table <- tibble(Location = "Grand_Boulevard,_Chicago", Description = text) #change location
+
+# Add rows to original table Community_description
+Community_description <- rbind(Community_description, text_table)
+
+```
+
+Oakland, Chicago
+
+```{r}
+# Build url
+  url <- ("https://en.wikipedia.org/wiki/Oakland,_Chicago") #change location 
+  src <- read_html(url)
+  print(url)
+
+# Extract article from url 
+article <- html_nodes(src, xpath = '//p')
+
+# Extract text and put into a character vector called "text", and collapse into 1 cell    
+text <- html_text(article) 
+text <- text %>% paste(collapse = 'text') 
+
+# Put text into a 2-column and 2-cell tibble, where the first variable is the community_area 
+text_table <- tibble(Location = "Oakland,_Chicago", Description = text) #change location
+
+# Add rows to original table Community_description
+Community_description <- rbind(Community_description, text_table)
+
+```
+
+Kenwood, Chicago
+
+```{r}
+# Build url
+  url <- ("https://en.wikipedia.org/wiki/Kenwood,_Chicago") #change location 
+  src <- read_html(url)
+  print(url)
+
+# Extract article from url 
+article <- html_nodes(src, xpath = '//p')
+
+# Extract text and put into a character vector called "text", and collapse into 1 cell    
+text <- html_text(article) 
+text <- text %>% paste(collapse = 'text') 
+
+# Put text into a 2-column and 2-cell tibble, where the first variable is the community_area 
+text_table <- tibble(Location = "Kenwood,_Chicago", Description = text) #change location
+
+# Add rows to original table Community_description
+Community_description <- rbind(Community_description, text_table)
+
+
+```
+
+Hyde Park, Chicago
+
+```{r}
+# Build url
+  url <- ("https://en.wikipedia.org/wiki/Hyde_Park,_Chicago") #change location 
+  src <- read_html(url)
+  print(url)
+
+# Extract article from url 
+article <- html_nodes(src, xpath = '//p')
+
+# Extract text and put into a character vector called "text", and collapse into 1 cell    
+text <- html_text(article) 
+text <- text %>% paste(collapse = 'text') 
+
+# Put text into a 2-column and 2-cell tibble, where the first variable is the community_area 
+text_table <- tibble(Location = "Hyde_Park,_Chicago", Description = text) #change location
+
+# Add rows to original table Community_description
+Community_description <- rbind(Community_description, text_table)
+
+
+```
+
+Remove unnecessary row
+
+```{r}
+
+Community_description <- Community_description[-c(1), ]
+print(Community_description)
+```
+
+### Cleaning
+
+Let's clean the data using `tidytext`. If you have trouble with this section, see the example shown in <https://www.tidytextmining.com/tidytext.html>. Create tokens using `unnest_tokens`. Make sure the data is in one-token-per-row format.
+
+Starting with one city (Hyde Park), use the `text_table` tibble to practice breaking text into individual tokens and transforming it to a tidy data structure
+
+```{r}
+library(tidytext)
+
+tidy_table <- text_table %>%
+  unnest_tokens(word, Description)
+```
+
+Remove any stop words within the data.
+
+```{r}
+
+data(stop_words)
+
+tidy_table <- tidy_table %>%
+  anti_join(stop_words)
+```
+
+Now repeat the above steps so for all 4 areas at once
+
+```{r}
+
+tidy_chicago <- Community_description %>%
+  unnest_tokens(word, Description)
+
+data(stop_words)
+
+tidy_chicago <- tidy_chicago %>%
+  anti_join(stop_words)
+
+```
+
+### Analyzing
+
+What are the most common words used overall?
+
+```{r}
+
+tidy_chicago %>%
+  count(word, sort = TRUE)
+
+```
+
+**Plot the most common words across all 4 locations**
+
+```{r}
+
+library(ggplot2)
+
+tidy_chicago %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 20) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) +
+  geom_col() +
+  labs(y = NULL)
+
+```
+
+Plot the most common words within each location.
+
+```{r}
+library(ggplot2)
+
+# Group by Location and word, and count the frequency of each word 
+word_frequency <- tidy_chicago %>%
+  group_by(Location, word) %>%
+  summarise(count = n ()) %>%
+  ungroup() 
+
+# Find the top 5 most common words in each location
+top_words <- word_frequency %>%
+  group_by(Location) %>%
+  arrange(desc(count)) %>%
+  slice_head(n = 5) %>%
+  select(Location, word, count)
+
+# Create a bar plot to visualize the frequency of the top 5 most common words for all locations
+ggplot(top_words, aes(x = Location, y = count, fill = word)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Top 5 Most Common Words in Each Location", x = "Location", y = "Frequency") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**What are some of the similarities between the locations?**
+
+-   *University* is common in Hyde Park and Kenwood.
+
+-   All four locations' most common terms are their location names.
+
+**What are some of the differences?**
+
+-   *Street* is frequent in Hyde Park only, and not the other three locations.
+
+-   *Community* is common in Grand Boulevard and not the other three locations.
+
+-   *Housing* and *Homes* are common in Oakland and not the other three locations.
+
+-   *School* is a common term only in Kenwood, and not the other three locations.
